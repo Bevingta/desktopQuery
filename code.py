@@ -1,267 +1,288 @@
-# code.py - Main CircuitPython code for Smart Bookshelf with servo manager
-
-import time
-import board
-import pwmio
-import busio
-import microcontroller
-import neopixel
-import adafruit_requests
-import ssl
-import socketpool
 import wifi
 import json
-import traceback
-from adafruit_motor import servo
-from servo_manager import ServoManager
+import ssl
+import adafruit_requests
+from adafruit_connection_manager import get_radio_socketpool
+from adafruit_httpserver import Server, Request, Response
+from helpers.base_response import return_a_response
 
-# Wi-Fi and API Configuration
-try:
-    from secrets import secrets
-    WIFI_SSID = secrets["ssid"]
-    WIFI_PASSWORD = secrets["password"]
-    API_URL = secrets["api_url"]
-except ImportError:
-    # Fallback values if secrets.py doesn't exist
-    WIFI_SSID = "your_wifi_ssid"
-    WIFI_PASSWORD = "your_wifi_password"
-    API_URL = "http://your-database-server.com:8000/api"
+pool = get_radio_socketpool(wifi.radio)
+server = Server(pool, "/static", debug=True)
+session = adafruit_requests.Session(pool, ssl.create_default_context())
 
-# Constants
-CHECK_INTERVAL = 5  # Check for new commands every 5 seconds
-SERVO_PUSH_DURATION = 1.5  # How long to hold the push position
+# Sample JSON data of notebooks
+notebooks_data = json.dumps([
+    {
+        "name": "Machine Learning Basics",
+        "idx": "ml001",
+        "contents": ["supervised learning", "regression", "classification", "model evaluation"]
+    },
+    {
+        "name": "Deep Learning",
+        "idx": "dl002",
+        "contents": ["neural networks", "backpropagation", "activation functions", "deep architectures"]
+    },
+    {
+        "name": "Reinforcement Learning",
+        "idx": "rl003",
+        "contents": ["Q-learning", "policy gradients", "reward systems", "exploration vs exploitation"]
+    },
+    {
+        "name": "Natural Language Processing",
+        "idx": "nlp004",
+        "contents": ["tokenization", "word embeddings", "transformers", "BERT models"]
+    }
+])
 
-# LED status colors
-LED_COLORS = {
-    "boot": (255, 0, 255),    # Magenta - Starting up
-    "connecting": (0, 0, 255), # Blue - Connecting to WiFi
-    "ready": (0, 255, 0),      # Green - Connected and ready
-    "active": (255, 255, 0),   # Yellow - Servo active
-    "error": (255, 0, 0),      # Red - Error
-    "off": (0, 0, 0)           # Off
-}
 
-# Configure servo pins
-SERVO_PINS = [
-    board.GP0, board.GP1, board.GP2, board.GP3, board.GP4,
-    board.GP5, board.GP6, board.GP7, board.GP8, board.GP9
-]
-
-# Global variables
-pixel = None
-servo_manager = None
-requests_session = None
-last_command_id = None
-
-def setup_hardware():
-    """Initialize all hardware components"""
-    global pixel, servo_manager
-    
-    # Setup onboard NeoPixel for status indication
-    pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3)
-    pixel.fill(LED_COLORS["boot"])
-    
-    # Initialize Servo Manager
-    servo_manager = ServoManager()
-    
-    # Create and add all servo objects to the manager
-    for pin in SERVO_PINS:
-        # Configure PWM output for each servo
-        pwm = pwmio.PWMOut(pin, duty_cycle=0, frequency=50)
-        # Create a servo object
-        servo_motor = servo.Servo(pwm, min_pulse=500, max_pulse=2500)
-        # Add to manager with default settings
-        servo_manager.add_servo(servo_motor)
-    
-    print(f"Initialized {len(servo_manager.servos)} servo motors")
-    
-    # Optional: Test all servos briefly
-    # servo_manager.center_all()
-    # time.sleep(1)
-    # servo_manager.test_all()
-
-def set_status(status):
-    """Set the status LED color"""
-    if pixel:
-        pixel.fill(LED_COLORS.get(status, LED_COLORS["error"]))
-
-def connect_wifi():
-    """Connect to WiFi network"""
-    print(f"Connecting to {WIFI_SSID}...")
-    set_status("connecting")
-    
-    # Connect to WiFi
+def search_notebooks_with_ollama(query):
+    """
+    Search for the most relevant notebook using Ollama API.
+    """
     try:
-        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-        print(f"Connected to {WIFI_SSID}!")
-        print(f"IP Address: {wifi.radio.ipv4_address}")
-        set_status("ready")
-        time.sleep(1)
-        return True
-    except Exception as e:
-        print(f"Failed to connect to WiFi: {e}")
-        # Flash error pattern
-        for _ in range(5):
-            set_status("error")
-            time.sleep(0.2)
-            set_status("off")
-            time.sleep(0.2)
-        return False
+        # Ollama API endpoint - adjust the URL to your local Ollama instance
+        url = "http://136.167.238.48:11434/api/generate"
 
-def setup_http():
-    """Set up the HTTP session for API requests"""
-    global requests_session
-    
-    try:
-        # Create a socket pool for the Wi-Fi interface
-        pool = socketpool.SocketPool(wifi.radio)
-        
-        # Create a requests object
-        requests_session = adafruit_requests.Session(pool, ssl.create_default_context())
-        return True
-    except Exception as e:
-        print(f"Error setting up HTTP session: {e}")
-        return False
+        # Prepare the notebooks data
+        notebooks = json.loads(notebooks_data)
 
-def get_latest_command():
-    """Check the API for any new commands"""
-    global last_command_id
-    
-    try:
-        # Brief LED flash to show we're checking
-        current_status = pixel[0]
-        set_status("connecting")
-        
-        # GET request to check for latest commands
-        response = requests_session.get(f"{API_URL}/query/latest")
-        data = response.json()
-        
-        # Restore LED
-        pixel.fill(current_status)
-        
-        # Check if this is a new command
-        if data.get("id") != last_command_id and data.get("status") == "pending":
-            last_command_id = data.get("id")
-            
-            # Extract the book index and activate the servo
-            book_index = data.get("match", {}).get("index")
-            if book_index is not None:
-                print(f"Received command to activate book at index {book_index}")
-                
-                # Activate the servo
-                set_status("active")
-                success = servo_manager.push_and_return(
-                    book_index, 
-                    push_angle=180, 
-                    duration=SERVO_PUSH_DURATION
-                )
-                set_status("ready")
-                
-                # Update command status
-                status_update = {"id": last_command_id, "status": "completed" if success else "failed"}
-                update_response = requests_session.post(
-                    f"{API_URL}/query/update", 
-                    json=status_update,
-                    headers={"Content-Type": "application/json"}
-                )
-                print(f"Command {last_command_id} completed with status: {status_update['status']}")
-                
-        return True
-    except Exception as e:
-        print(f"Error checking for commands: {e}")
-        traceback.print_exception(e, e, e.__traceback__)
-        
-        # Flash error briefly
-        set_status("error")
-        time.sleep(0.5)
-        set_status("ready")
-        return False
+        # Create a prompt for the model without using indent
+        prompt = f"""
+        I have these notebooks with their contents:
+        {json.dumps(notebooks)}
 
-def main():
-    """Main program entry point"""
-    try:
-        # Initialize hardware
-        setup_hardware()
-        
-        # Connect to WiFi
-        wifi_connected = connect_wifi()
-        if not wifi_connected:
-            # If we can't connect, go into a safe mode
-            # Blink error pattern indefinitely
-            while True:
-                set_status("error")
-                time.sleep(0.5)
-                set_status("off")
-                time.sleep(0.5)
-        
-        # Set up HTTP session
-        http_setup = setup_http()
-        if not http_setup:
-            # If HTTP setup fails, indicate error but try to continue
-            set_status("error")
-            time.sleep(2)
-            set_status("ready")
-        
-        # Center all servos at startup
-        servo_manager.center_all()
-        
-        # Main loop
-        print("Entering main loop")
-        while True:
+        A user is searching for: "{query}"
+
+        Which notebook is most relevant to this search query? Return only a JSON with the format:
+        {{
+          "idx": "the notebook id",
+          "name": "the notebook name",
+          "reason": "brief explanation of why this matches"
+        }}
+        """
+
+        # Create payload for Ollama API
+        payload = {
+            "model": "bevingta/physcomp",  # Your specific Ollama model
+            "prompt": prompt,
+            "stream": False
+        }
+
+        # Make the API call
+        response = session.post(url, json=payload)
+
+        print("Response: ", response)
+
+        if response.status_code == 200:
+            result = response.json()
+
+            # Extract the generated text from the response
+            llm_output = result.get('response', '')
+
+            # Parse the JSON from the LLM output
             try:
-                get_latest_command()
-                time.sleep(CHECK_INTERVAL)
-                
-                # Optional: Add a heartbeat indicator
-                pixel.brightness = 0.1  # Dim briefly
-                time.sleep(0.1)
-                pixel.brightness = 0.3  # Back to normal
-                
-            except Exception as e:
-                print(f"Main loop error: {e}")
-                # Indicate error but continue
-                set_status("error")
-                time.sleep(1)
-                set_status("ready")
-                
-                # Try to reconnect if needed
-                if not wifi.radio.connected:
-                    print("WiFi disconnected. Attempting to reconnect...")
-                    connect_wifi()
-                    setup_http()
-    
-    except Exception as e:
-        # Catch any unhandled exceptions
-        print(f"Critical error: {e}")
-        traceback.print_exception(e, e, e.__traceback__)
-        
-        # Flash SOS pattern
-        while True:
-            # ... 3 short flashes
-            for _ in range(3):
-                set_status("error")
-                time.sleep(0.2)
-                set_status("off")
-                time.sleep(0.2)
-            time.sleep(0.4)
-            
-            # --- 3 long flashes
-            for _ in range(3):
-                set_status("error")
-                time.sleep(0.6)
-                set_status("off")
-                time.sleep(0.2)
-            time.sleep(0.4)
-            
-            # ... 3 short flashes again
-            for _ in range(3):
-                set_status("error")
-                time.sleep(0.2)
-                set_status("off")
-                time.sleep(0.2)
-            
-            time.sleep(1.5)  # Pause between SOS signals
+                # Look for JSON-like content between curly braces
+                start_idx = llm_output.find('{')
+                end_idx = llm_output.rfind('}') + 1
+                if start_idx != -1 and end_idx != -1:
+                    json_str = llm_output[start_idx:end_idx]
+                    match_data = json.loads(json_str)
 
-# Run the main function
-if __name__ == "__main__":
-    main()
+                    # Add match score for consistency with UI
+                    if 'match_score' not in match_data:
+                        match_data['match_score'] = 5  # LLM matches get high score
+
+                    return match_data
+            except Exception as json_error:
+                print(f"Error parsing LLM output: {json_error}")
+
+        # Fallback to basic search if API call or parsing fails
+        return search_notebooks_basic(query)
+
+    except Exception as e:
+        print(f"Ollama API error: {e}")
+        # Fallback to basic search
+        return search_notebooks_basic(query)
+
+
+def search_notebooks_basic(query):
+    """
+    Basic search function as fallback.
+    """
+    query = query.lower()
+    notebooks = json.loads(notebooks_data)
+    best_match = None
+    best_score = 0
+
+    for notebook in notebooks:
+        # Check if query matches the notebook name
+        if query in notebook["name"].lower():
+            score = 3  # Higher weight for name matches
+            if score > best_score:
+                best_score = score
+                best_match = notebook
+
+        # Check if query matches any content item
+        for item in notebook["contents"]:
+            if query in item.lower():
+                score = 2  # Lower weight for content matches
+                if score > best_score:
+                    best_score = score
+                    best_match = notebook
+
+    # If no direct match, find partial matches
+    if best_match is None:
+        for notebook in notebooks:
+            # Check for partial matches in name
+            name_words = notebook["name"].lower().split()
+            for word in name_words:
+                if query in word or word in query:
+                    score = 1  # Even lower weight for partial matches
+                    if score > best_score:
+                        best_score = score
+                        best_match = notebook
+
+            # Check for partial matches in contents
+            for item in notebook["contents"]:
+                item_words = item.lower().split()
+                for word in item_words:
+                    if query in word or word in query:
+                        score = 0.5
+                        if score > best_score:
+                            best_score = score
+                            best_match = notebook
+
+    if best_match:
+        return {
+            "name": best_match["name"],
+            "idx": best_match["idx"],
+            "match_score": best_score,
+            "reason": "Found by basic search algorithm"
+        }
+    else:
+        return {"name": "No matching notebook found", "idx": "none", "match_score": 0, "reason": "No matches found"}
+
+
+@server.route("/")
+def base(request: Request):
+    """
+    Serve a default static plain text message.
+    """
+    return Response(request, "Hello from the CircuitPython HTTP Server!")
+
+
+@server.route("/html")
+def html_page(request: Request):
+    """
+    Serve an HTML page with search functionality.
+    """
+    # Get the response from the function
+    response_text = return_a_response()
+
+    # Create HTML with search form
+    html = """<!DOCTYPE html>
+    <html>
+    <head>
+        <title>Notebook Search</title>
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+            form { margin: 20px 0; }
+            input[type="text"] { padding: 8px; width: 70%; }
+            button { padding: 8px 16px; }
+            #result { margin-top: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 5px; }
+            .loading { display: none; margin-top: 10px; color: #666; }
+        </style>
+        <script>
+            function searchNotebooks() {
+                const query = document.getElementById('search-query').value;
+
+                if (!query) {
+                    alert('Please enter a search term');
+                    return false;
+                }
+
+                // Show loading indicator
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('result').innerHTML = '';
+
+                fetch(`/api/search?q=${encodeURIComponent(query)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        // Hide loading indicator
+                        document.getElementById('loading').style.display = 'none';
+
+                        const resultDiv = document.getElementById('result');
+                        resultDiv.innerHTML = `
+                            <h3>Search Result:</h3>
+                            <p><strong>Notebook:</strong> ${data.name}</p>
+                            <p><strong>Index:</strong> ${data.idx}</p>
+                            <p><strong>Match Score:</strong> ${data.match_score}</p>
+                            ${data.reason ? `<p><strong>Reason:</strong> ${data.reason}</p>` : ''}
+                        `;
+                    })
+                    .catch(error => {
+                        // Hide loading indicator
+                        document.getElementById('loading').style.display = 'none';
+
+                        console.error('Error:', error);
+                        document.getElementById('result').innerHTML = '<p>Error processing your request</p>';
+                    });
+
+                return false; // Prevent form submission
+            }
+        </script>
+    </head>
+    <body>
+        <h1>Notebook Search</h1>
+        <p>Enter a topic to find the most relevant notebook:</p>
+
+        <form onsubmit="return searchNotebooks()">
+            <input type="text" id="search-query" placeholder="e.g., reinforcement learning">
+            <button type="submit">Search</button>
+        </form>
+
+        <div id="loading" class="loading">Searching notebooks with AI... this may take a few seconds</div>
+
+        <div id="result">
+            <p>Search results will appear here</p>
+        </div>
+
+        <hr>
+        <p>Server test response: """ + response_text + """</p>
+    </body>
+    </html>
+    """
+
+    return Response(request, html, content_type="text/html")
+
+
+@server.route("/api/search")
+def search_api(request: Request):
+    """
+    API endpoint for searching notebooks.
+    """
+    # Get the query parameter
+    query = request.query_params.get("q", "")
+
+    # Search notebooks using Ollama
+    try:
+        result = search_notebooks_with_ollama(query)
+    except Exception as e:
+        print(f"Search error: {e}")
+        # Fallback to basic search
+        result = search_notebooks_basic(query)
+
+    # Return JSON response
+    return Response(request, json.dumps(result), content_type="application/json")
+
+
+@server.route("/api/call-function")
+def call_function(request: Request):
+    """
+    API route that calls the function and returns its result.
+    """
+    response_text = return_a_response()
+    return Response(request, response_text)
+
+
+server.serve_forever(str(wifi.radio.ipv4_address))
