@@ -2,9 +2,60 @@ import wifi
 import json
 import ssl
 import adafruit_requests
+import board
+import pwmio
+import time
 from adafruit_connection_manager import get_radio_socketpool
 from adafruit_httpserver import Server, Request, Response
 from helpers.base_response import return_a_response
+from adafruit_motor import servo
+
+# Create motor PWM output
+motor_0_pwm = pwmio.PWMOut(board.GP16, frequency=50)
+servo_0 = servo.Servo(motor_0_pwm)
+
+
+def move_motor(position_percent=50, duration=1.0):
+    """
+    Move the motor connected to GP16 to a specific position.
+
+    Args:
+        position_percent (int): Position from 0-100%
+        duration (float): How long to hold the position in seconds
+    """
+    servo_0.angle = 180 * (position_percent / 100)
+    time.sleep(2.0)
+    servo_0.angle = 0
+
+
+def move_motor_based_on_notebook(notebook_idx):
+    """
+    Move the motor based on the notebook index that was returned.
+
+    Args:
+        notebook_idx (str): The index of the notebook
+    """
+    print(f"Notebook index: {notebook_idx}")
+
+    # Define different motor movements based on notebook index
+    if notebook_idx == "ml001":
+        # Machine Learning Basics - move to 25%
+        move_motor(25)
+    elif notebook_idx == "dl002":
+        # Deep Learning - move to 50%
+        move_motor(50)
+    elif notebook_idx == "rl003":
+        # Reinforcement Learning - move to 75%
+        move_motor(75)
+    elif notebook_idx == "nlp004":
+        # Natural Language Processing - move to 100%
+        move_motor(100)
+    else:
+        # If no match or invalid index, move to 0%
+        move_motor(0)
+
+    return notebook_idx
+
 
 pool = get_radio_socketpool(wifi.radio)
 server = Server(pool, "/static", debug=True)
@@ -53,7 +104,7 @@ def search_notebooks_with_ollama(query):
 
         A user is searching for: "{query}"
 
-        Which notebook is most relevant to this search query? Return only a JSON with the format:
+        Which notebook is most relevant to this search query? Use the name and contents to inform your answer. Return only a JSON with the format:
         {{
           "idx": "the notebook id",
           "name": "the notebook name",
@@ -91,6 +142,10 @@ def search_notebooks_with_ollama(query):
                     # Add match score for consistency with UI
                     if 'match_score' not in match_data:
                         match_data['match_score'] = 5  # LLM matches get high score
+
+                    # Move the motor based on notebook index
+                    notebook_idx = match_data.get('idx', 'none')
+                    move_motor_based_on_notebook(notebook_idx)
 
                     return match_data
             except Exception as json_error:
@@ -153,13 +208,21 @@ def search_notebooks_basic(query):
                             best_match = notebook
 
     if best_match:
-        return {
+        result = {
             "name": best_match["name"],
             "idx": best_match["idx"],
             "match_score": best_score,
             "reason": "Found by basic search algorithm"
         }
+
+        # Move the motor based on notebook index
+        notebook_idx = best_match["idx"]
+        move_motor_based_on_notebook(notebook_idx)
+
+        return result
     else:
+        # No match found - move motor to 0% position
+        move_motor_based_on_notebook("none")
         return {"name": "No matching notebook found", "idx": "none", "match_score": 0, "reason": "No matches found"}
 
 
@@ -283,6 +346,27 @@ def call_function(request: Request):
     """
     response_text = return_a_response()
     return Response(request, response_text)
+
+
+@server.route("/api/motor")
+def motor_api(request: Request):
+    """
+    API endpoint for directly controlling the motor.
+    """
+    # Get the position parameter (0-100%)
+    position = int(request.query_params.get("position", "50"))
+    position = max(0, min(100, position))  # Ensure position is between 0-100
+
+    # Get the duration parameter (seconds)
+    duration = float(request.query_params.get("duration", "1.0"))
+    duration = max(0.1, min(5.0, duration))  # Reasonable limits on duration
+
+    # Move the motor
+    move_motor(position, duration)
+
+    # Return JSON response
+    result = {"success": True, "position": position, "duration": duration}
+    return Response(request, json.dumps(result), content_type="application/json")
 
 
 server.serve_forever(str(wifi.radio.ipv4_address))
