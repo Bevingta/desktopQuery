@@ -7,7 +7,6 @@ import pwmio
 import time
 from adafruit_connection_manager import get_radio_socketpool
 from adafruit_httpserver import Server, Request, Response
-from helpers.base_response import return_a_response
 from adafruit_motor import servo
 
 # Create motor PWM output
@@ -282,8 +281,6 @@ def html_page(request: Request):
     """
     Serve an HTML page with search functionality.
     """
-    # Get the response from the function
-    response_text = return_a_response()
 
     # Create HTML with search form
     html = """<!DOCTYPE html>
@@ -352,9 +349,6 @@ def html_page(request: Request):
         <div id="result">
             <p>Search results will appear here</p>
         </div>
-
-        <hr>
-        <p>Server test response: """ + response_text + """</p>
     </body>
     </html>
     """
