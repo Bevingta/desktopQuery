@@ -11,21 +11,55 @@ from helpers.base_response import return_a_response
 from adafruit_motor import servo
 
 # Create motor PWM output
-motor_0_pwm = pwmio.PWMOut(board.GP16, frequency=50)
-servo_0 = servo.Servo(motor_0_pwm)
+pwm0 = pwmio.PWMOut(board.GP16, frequency=50)
+servo_0 = servo.Servo(pwm0, min_pulse=870, max_pulse=2370)
+
+pwm1 = pwmio.PWMOut(board.GP17, frequency=50)
+servo_1 = servo.Servo(pwm1, min_pulse=870, max_pulse=2370)
+
+pwm2 = pwmio.PWMOut(board.GP18, frequency=50)
+servo_2 = servo.Servo(pwm2, min_pulse=870, max_pulse=2370)
+
+pwm3 = pwmio.PWMOut(board.GP19, frequency=50)
+servo_3 = servo.Servo(pwm3, min_pulse=870, max_pulse=2370)
+
+pwm4 = pwmio.PWMOut(board.GP20, frequency=50)
+servo_4 = servo.Servo(pwm4, min_pulse=870, max_pulse=2370)
+
+pwm5 = pwmio.PWMOut(board.GP21, frequency=50)
+servo_5 = servo.Servo(pwm5, min_pulse=870, max_pulse=2370)
+
+pwm6 = pwmio.PWMOut(board.GP15, frequency=50)
+servo_6 = servo.Servo(pwm6, min_pulse=870, max_pulse=2370)
+
+pwm7 = pwmio.PWMOut(board.GP14, frequency=50)
+servo_7 = servo.Servo(pwm7, min_pulse=870, max_pulse=2370)
+
+angle = -5
+
+servo_list = [servo_0, servo_1, servo_2, servo_3, servo_4, servo_5, servo_6, servo_7]
 
 
-def move_motor(position_percent=50, duration=1.0):
+def move_motor(motor):
     """
     Move the motor connected to GP16 to a specific position.
 
     Args:
-        position_percent (int): Position from 0-100%
-        duration (float): How long to hold the position in seconds
+        motor: the motor class to move
     """
-    servo_0.angle = 180 * (position_percent / 100)
-    time.sleep(2.0)
-    servo_0.angle = 0
+    motor.angle = 0
+
+    angles = 180
+
+    for i in range(angles):
+        motor.angle = i
+        time.sleep(0.01)
+
+    for i in reversed(range(angles)):
+        motor.angle = i
+        time.sleep(0.01)
+
+    motor.angle = 0
 
 
 def move_motor_based_on_notebook(notebook_idx):
@@ -33,26 +67,13 @@ def move_motor_based_on_notebook(notebook_idx):
     Move the motor based on the notebook index that was returned.
 
     Args:
-        notebook_idx (str): The index of the notebook
+        notebook_idx (int): The index of the notebook
     """
     print(f"Notebook index: {notebook_idx}")
 
-    # Define different motor movements based on notebook index
-    if notebook_idx == "ml001":
-        # Machine Learning Basics - move to 25%
-        move_motor(25)
-    elif notebook_idx == "dl002":
-        # Deep Learning - move to 50%
-        move_motor(50)
-    elif notebook_idx == "rl003":
-        # Reinforcement Learning - move to 75%
-        move_motor(75)
-    elif notebook_idx == "nlp004":
-        # Natural Language Processing - move to 100%
-        move_motor(100)
-    else:
-        # If no match or invalid index, move to 0%
-        move_motor(0)
+    motor = servo_list[int(notebook_idx)]
+
+    move_motor(motor)
 
     return notebook_idx
 
@@ -65,23 +86,45 @@ session = adafruit_requests.Session(pool, ssl.create_default_context())
 notebooks_data = json.dumps([
     {
         "name": "Machine Learning Basics",
-        "idx": "ml001",
-        "contents": ["supervised learning", "regression", "classification", "model evaluation"]
+        "idx": "0",
+        "contents": ["gradient descent", "classification", "perceptron", "ROC Curves", "nonlinear layers", "GNNs",
+                     "Logistic Regression", "reinforcement learning", "ensemble learning", "gradient boosting"]
     },
     {
-        "name": "Deep Learning",
-        "idx": "dl002",
-        "contents": ["neural networks", "backpropagation", "activation functions", "deep architectures"]
+        "name": "Econ and Computation",
+        "idx": "1",
+        "contents": ["game theory", "nash equilibrium", "correlated equilibrium", "p2p systems", "cryptoecon",
+                     "peer prediction", "kidney problem", "bitcoin", "combinatorial auctions", "bidding languages"]
     },
     {
-        "name": "Reinforcement Learning",
-        "idx": "rl003",
-        "contents": ["Q-learning", "policy gradients", "reward systems", "exploration vs exploitation"]
+        "name": "Empty Notebook",
+        "idx": "2",
+        "contents": []
     },
     {
-        "name": "Natural Language Processing",
-        "idx": "nlp004",
-        "contents": ["tokenization", "word embeddings", "transformers", "BERT models"]
+        "name": "Empty Notebook",
+        "idx": "3",
+        "contents": []
+    },
+    {
+        "name": "Empty Notebook",
+        "idx": "4",
+        "contents": []
+    },
+    {
+        "name": "Suffolk Summer",
+        "idx": "5",
+        "contents": ["maze problem", "pathfinding", "aws", "ec2", "lambda functions", "construction", "python"]
+    },
+    {
+        "name": "Empty Notebook",
+        "idx": "6",
+        "contents": []
+    },
+    {
+        "name": "Suffolk School Year",
+        "idx": "7",
+        "contents": ["software development", "testing", "pytest", "pull requests", "github"]
     }
 ])
 
@@ -363,6 +406,7 @@ def motor_api(request: Request):
 
     # Move the motor
     move_motor(position, duration)
+
 
     # Return JSON response
     result = {"success": True, "position": position, "duration": duration}
